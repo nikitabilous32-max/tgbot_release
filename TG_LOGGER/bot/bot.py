@@ -1,20 +1,31 @@
-
-import sys
 import os
+import time
+import sys
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import asyncio
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, FSInputFile
+from telegram import (
+    Bot,
+    Update,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    ReplyKeyboardMarkup,
+    KeyboardButton
+)
+from telegram.ext import (
+    Updater,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    Filters,
+    CallbackContext
+)
+from telegram import InputFile
+
 from database import get_db
-import time
+
 
 BOT_TOKEN = "8987195198:AAHv7vh2mDPt81mDK_EDYxHv5AhHrOGJ7YY"
-
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
 
 
 # ---------- БАЗА ----------
@@ -88,38 +99,36 @@ def get_deleted_by_username(username):
     return rows
 
 
-# ---------- REPLY-КНОПКИ СНИЗУ ----------
+# ---------- КНОПКИ ----------
 
 reply_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="📁 Чаты"), KeyboardButton(text="👤 Пользователи")],
-        [KeyboardButton(text="🔍 Username")]
+    [
+        [KeyboardButton("📁 Чаты"), KeyboardButton("👤 Пользователи")],
+        [KeyboardButton("🔍 Username")]
     ],
     resize_keyboard=True
 )
 
 
-@dp.message(Command("start"))
-async def start_cmd(msg: types.Message):
-    await msg.answer("Выберите действие:", reply_markup=reply_kb)
+# ---------- HANDLERS ----------
+
+def start(update: Update, context: CallbackContext):
+    update.message.reply_text("Выберите действие:", reply_markup=reply_kb)
 
 
-@dp.message(Command("menu"))
-async def menu_cmd(msg: types.Message):
-    await msg.answer("Меню открыто:", reply_markup=reply_kb)
+def menu(update: Update, context: CallbackContext):
+    update.message.reply_text("Меню открыто:", reply_markup=reply_kb)
 
-@dp.message(Command("clear"))
-async def clear_cmd(msg: types.Message):
-    await msg.answer("🧹 Очищаю базу и файлы...")
 
-    # --- Удаляем записи из базы ---
+def clear(update: Update, context: CallbackContext):
+    update.message.reply_text("🧹 Очищаю базу и файлы...")
+
     conn = get_db()
     cur = conn.cursor()
     cur.execute("DELETE FROM messages")
     conn.commit()
     conn.close()
 
-    # --- Удаляем локальные файлы ---
     media_root = os.path.join(os.path.dirname(__file__), "..", "media")
 
     removed_files = 0
@@ -131,12 +140,14 @@ async def clear_cmd(msg: types.Message):
             except:
                 pass
 
-    await msg.answer(f"✔ База очищена\n✔ Удалено файлов: {removed_files}")
+    update.message.reply_text(f"✔ База очищена\n✔ Удалено файлов: {removed_files}")
 
 
-# ---------- ОТПРАВКА УДАЛЁННЫХ СООБЩЕНИЙ ----------
+# ---------- ОТПРАВКА УДАЛЁННЫХ ----------
 
-async def send_deleted(callback: types.CallbackQuery, rows):
+def send_deleted(update: Update, context: CallbackContext, rows):
+    chat_id = update.effective_chat.id
+
     for r in rows:
         date_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["date"]))
 
@@ -150,146 +161,128 @@ async def send_deleted(callback: types.CallbackQuery, rows):
 
         mt = r["media_type"]
         local_path = r["local_path"]
-        chat_id = callback.message.chat.id
 
-        # --- если есть локальный файл ---
         if local_path and os.path.exists(local_path):
-
             try:
-                # КРУЖОЧКИ — caption нельзя, отправляем отдельно
-                if mt == "video_note":
-                    await bot.send_video_note(chat_id, FSInputFile(local_path))
-                    await bot.send_message(chat_id, caption)
-                    continue
+                file = InputFile(local_path)
 
-                # ФОТО
                 if mt == "photo":
-                    await bot.send_photo(chat_id, FSInputFile(local_path), caption=caption)
-                    continue
+                    context.bot.send_photo(chat_id, file, caption=caption)
+                elif mt == "video":
+                    context.bot.send_video(chat_id, file, caption=caption)
+                elif mt == "document":
+                    context.bot.send_document(chat_id, file, caption=caption)
+                elif mt == "audio":
+                    context.bot.send_audio(chat_id, file, caption=caption)
+                elif mt == "voice":
+                    context.bot.send_voice(chat_id, file, caption=caption)
+                elif mt == "animation":
+                    context.bot.send_animation(chat_id, file, caption=caption)
+                elif mt == "sticker":
+                    context.bot.send_sticker(chat_id, file)
+                    context.bot.send_message(chat_id, caption)
+                else:
+                    context.bot.send_document(chat_id, file, caption=caption)
 
-                # ВИДЕО
-                if mt == "video":
-                    await bot.send_video(chat_id, FSInputFile(local_path), caption=caption)
-                    continue
-
-                # ДОКУМЕНТЫ
-                if mt == "document":
-                    await bot.send_document(chat_id, FSInputFile(local_path), caption=caption)
-                    continue
-
-                # АУДИО
-                if mt == "audio":
-                    await bot.send_audio(chat_id, FSInputFile(local_path), caption=caption)
-                    continue
-
-                # ГОЛОСОВЫЕ
-                if mt == "voice":
-                    await bot.send_voice(chat_id, FSInputFile(local_path), caption=caption)
-                    continue
-
-                # GIF / анимации
-                if mt == "animation":
-                    await bot.send_animation(chat_id, FSInputFile(local_path), caption=caption)
-                    continue
-
-                # СТИКЕРЫ — caption нельзя
-                if mt == "sticker":
-                    await bot.send_sticker(chat_id, FSInputFile(local_path))
-                    await bot.send_message(chat_id, caption)
-                    continue
-
-                # fallback — отправляем как документ
-                await bot.send_document(chat_id, FSInputFile(local_path), caption=caption)
                 continue
 
             except Exception as e:
-                await callback.message.answer(f"Ошибка отправки файла: {e}\n{caption}")
+                update.message.reply_text(f"Ошибка отправки файла: {e}\n{caption}")
                 continue
 
-        # --- если файла нет ---
-        await callback.message.answer(caption)
+        update.message.reply_text(caption)
 
 
+# ---------- КНОПКИ ----------
 
-# ---------- ОБРАБОТКА КНОПОК СНИЗУ ----------
-
-@dp.message(lambda m: m.text == "📁 Чаты")
-async def open_chats(msg: types.Message):
+def open_chats(update: Update, context: CallbackContext):
     rows = get_deleted_chats()
 
     if not rows:
-        await msg.answer("Нет чатов с удалёнными сообщениями.")
+        update.message.reply_text("Нет чатов с удалёнными сообщениями.")
         return
 
-    kb = InlineKeyboardBuilder()
-    for r in rows:
-        kb.button(text=f"Chat {r['chat_id']}", callback_data=f"chat_{r['chat_id']}")
-    kb.adjust(1)
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"Chat {r['chat_id']}", callback_data=f"chat_{r['chat_id']}")]
+        for r in rows
+    ])
 
-    await msg.answer("Выберите чат:", reply_markup=kb.as_markup())
+    update.message.reply_text("Выберите чат:", reply_markup=kb)
 
 
-@dp.message(lambda m: m.text == "👤 Пользователи")
-async def open_users(msg: types.Message):
+def open_users(update: Update, context: CallbackContext):
     rows = get_deleted_users()
 
     if not rows:
-        await msg.answer("Нет пользователей, которые удаляли сообщения.")
+        update.message.reply_text("Нет пользователей, которые удаляли сообщения.")
         return
 
-    kb = InlineKeyboardBuilder()
-    for r in rows:
-        name = r["username"] if r["username"] else r["user_id"]
-        kb.button(text=f"{name}", callback_data=f"user_{r['user_id']}")
-    kb.adjust(1)
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(r["username"] or r["user_id"], callback_data=f"user_{r['user_id']}")]
+        for r in rows
+    ])
 
-    await msg.answer("Выберите пользователя:", reply_markup=kb.as_markup())
+    update.message.reply_text("Выберите пользователя:", reply_markup=kb)
 
 
-@dp.message(lambda m: m.text == "🔍 Username")
-async def open_usernames(msg: types.Message):
+def open_usernames(update: Update, context: CallbackContext):
     rows = get_deleted_usernames()
 
     if not rows:
-        await msg.answer("Нет username с удалёнными сообщениями.")
+        update.message.reply_text("Нет username с удалёнными сообщениями.")
         return
 
-    kb = InlineKeyboardBuilder()
-    for r in rows:
-        kb.button(text=f"@{r['username']}", callback_data=f"uname_{r['username']}")
-    kb.adjust(1)
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"@{r['username']}", callback_data=f"uname_{r['username']}")]
+        for r in rows
+    ])
 
-    await msg.answer("Выберите username:", reply_markup=kb.as_markup())
-
-
-# ---------- CALLBACK-ХЕНДЛЕРЫ ----------
-
-@dp.callback_query(lambda c: c.data.startswith("chat_"))
-async def show_chat(callback: types.CallbackQuery):
-    chat_id = callback.data.split("_", 1)[1]
-    rows = get_deleted_by_chat(chat_id)
-    await send_deleted(callback, rows)
+    update.message.reply_text("Выберите username:", reply_markup=kb)
 
 
-@dp.callback_query(lambda c: c.data.startswith("user_"))
-async def show_user(callback: types.CallbackQuery):
-    user_id = callback.data.split("_", 1)[1]
-    rows = get_deleted_by_user(user_id)
-    await send_deleted(callback, rows)
+# ---------- CALLBACKS ----------
 
+def callback_handler(update: Update, context: CallbackContext):
+    query = update.callback_query
+    data = query.data
 
-@dp.callback_query(lambda c: c.data.startswith("uname_"))
-async def show_username(callback: types.CallbackQuery):
-    username = callback.data.split("_", 1)[1]
-    rows = get_deleted_by_username(username)
-    await send_deleted(callback, rows)
+    if data.startswith("chat_"):
+        chat_id = data.split("_", 1)[1]
+        rows = get_deleted_by_chat(chat_id)
+        send_deleted(update, context, rows)
+
+    elif data.startswith("user_"):
+        user_id = data.split("_", 1)[1]
+        rows = get_deleted_by_user(user_id)
+        send_deleted(update, context, rows)
+
+    elif data.startswith("uname_"):
+        username = data.split("_", 1)[1]
+        rows = get_deleted_by_username(username)
+        send_deleted(update, context, rows)
+
+    query.answer()
 
 
 # ---------- ЗАПУСК ----------
 
-async def main():
-    await dp.start_polling(bot)
+def main():
+    updater = Updater(BOT_TOKEN, use_context=True)
+    dp = updater.dispatcher
+
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("menu", menu))
+    dp.add_handler(CommandHandler("clear", clear))
+
+    dp.add_handler(MessageHandler(Filters.text("📁 Чаты"), open_chats))
+    dp.add_handler(MessageHandler(Filters.text("👤 Пользователи"), open_users))
+    dp.add_handler(MessageHandler(Filters.text("🔍 Username"), open_usernames))
+
+    dp.add_handler(CallbackQueryHandler(callback_handler))
+
+    updater.start_polling()
+    updater.idle()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
